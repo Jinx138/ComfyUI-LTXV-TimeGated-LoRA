@@ -213,10 +213,8 @@ PromptRelay `segment_lengths` is left empty in this example. Its three `|`-separ
 
 ## Demo media
 
-```text
-examples/videos/Age_Slider_Reveal_Licon_Enabled.mp4
-examples/videos/Claymation_Style_Reveal_Licon_Enabled.mp4
-```
+* [Age Slider Reveal — directional transformation demo](examples/videos/Age_Slider_Reveal_Licon_Enabled.mp4)
+* [Claymation Style Reveal — realistic → claymation → realistic](examples/videos/Claymation_Style_Reveal_Licon_Enabled.mp4)
 
 The bundled demo video copies have been remuxed without user or workflow metadata.
 
