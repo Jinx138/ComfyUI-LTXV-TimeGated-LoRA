@@ -224,9 +224,10 @@ The bundled demo video copies have been remuxed without user or workflow metadat
 
 Third-party LoRAs used in demo workflows or videos are **not included** in this repository and are not required to use the custom node itself.
 
-| Demo asset / LoRA | Role in the demonstration | Credit / source status |
-|---|---|---|
-| Claymation LoRA (`LTX/Claymation.safetensors` in the example workflow) | Time-gated style LoRA active in the middle third | https://huggingface.co/vrgamedevgirl84/LTX_2.3_Clay_Mation_Style_LoRa |
-| Licon VBVR I2V LoRA (`LTX/Ltx2.3-Licon-VBVR-I2V-390K-R32.safetensors`, strength `1.0`) | Quality/consistency LoRA retained because disabling it substantially reduced demo quality | https://huggingface.co/LiconStudio/Ltx2.3-VBVR-lora-I2V |
-| Age Slider LoRA (`age_slider_ltx23_v_0_5.safetensors`) | Directional age-transformation demo video | Attribution pending confirmation. A public reference appears to point to Mohamed Oumoumad / `@MedOumoumad`; the weights are not distributed here. |
+| Demo asset / LoRA                                                                      | Role in the demonstration                                                                 | Credit / source status                                                                                                          |
+| -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Claymation LoRA (`LTX/Claymation.safetensors` in the example workflow)                 | Time-gated style LoRA active in the middle third                                          | [vrgamedevgirl84 — LTX 2.3 Clay Mation Style LoRA](https://huggingface.co/vrgamedevgirl84/LTX_2.3_Clay_Mation_Style_LoRa)       |
+| Licon VBVR I2V LoRA (`LTX/Ltx2.3-Licon-VBVR-I2V-390K-R32.safetensors`, strength `1.0`) | Quality/consistency LoRA retained because disabling it substantially reduced demo quality | [LiconStudio — Ltx2.3-VBVR-lora-I2V](https://huggingface.co/LiconStudio/Ltx2.3-VBVR-lora-I2V)                                   |
+| Age Slider LoRA (`age_slider_ltx23_v_0_5.safetensors`)                                 | Directional age-transformation demo video                                                 | Third-party LoRA; original source and author could not currently be verified. Weights are not distributed with this repository. |
+
 
