@@ -1,0 +1,21 @@
+[project]
+name = "ltxv-time-gated-lora"
+version = "1.1.0"
+description = "Time-gated LoRA envelopes and visual curve preview tools for LTX 2.3 video workflows in ComfyUI."
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = []
+classifiers = [
+    "Operating System :: OS Independent",
+    "Environment :: GPU :: NVIDIA CUDA",
+]
+
+[project.urls]
+Repository = "https://github.com/Jinx138/ComfyUI-LTXV-TimeGated-LoRA"
+Documentation = "https://github.com/Jinx138/ComfyUI-LTXV-TimeGated-LoRA#readme"
+"Bug Tracker" = "https://github.com/Jinx138/ComfyUI-LTXV-TimeGated-LoRA/issues"
+
+[tool.comfy]
+PublisherId = "jinx138"
+DisplayName = "LTXV Time-Gated LoRA"
+requires-comfyui = ">=0.24.0"
