@@ -1,6 +1,6 @@
-# ComfyUI-LTXV-TimeGated-LoRA v1.1rc4-dev
+# ComfyUI-LTXV-TimeGated-LoRA v1.1
 
-> **v1.1rc4-dev experimental envelope build:** adds `local` / `hold_strength` envelope modes, `q_curve` ramps, a reusable `data` output on the Inspector, and a CPU-rendered `LTXV Envelope Curve Preview (CPU)` node. `transition_frames` is only used by `manual_frames` and `transition_frames` legacy mode.
+> **v1.1 envelope build:** adds `local` / `hold_strength` envelope modes, `q_curve` ramps, a reusable `data` output on the Inspector, and a CPU-rendered `LTXV Envelope Curve Preview (CPU)` node. `transition_frames` is only used by `manual_frames` and `transition_frames` legacy mode.
 
 
 Node: **LTXV Time-Gated LoRA (LTX 2.3)**
