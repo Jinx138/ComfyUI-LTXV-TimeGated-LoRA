@@ -221,7 +221,7 @@ Two Time-Gated LoRA nodes can be stacked in the MODEL path. Their `data` outputs
 The repository also includes two three-up comparison videos:
 
 - [Cucumber comparison — No LoRA / Standard LoRA / Time-gated LoRA](examples/videos/threeup_lora_comparison_cucumber.mp4)
-- [Rain comparison — No LoRA / Standard LoRA / Time-gated LoRA](examples/videos/threeup_lora_comparison_rain.mp4)
+- [Rain comparison — No LoRA / Standard LoRA / Time-gated LoRA](examples/videos/threeup_lora_comparison_rain_repo.mp4)
 
 The cucumber comparison is a deliberately playful A/B showcase. The rain comparison is useful as a production/stress-test example: it demonstrates a rain/particle LoRA and also shows why stochastic, high-frequency detail LoRAs can be more sensitive to temporal gating than semantic or stylistic transformations.
 
