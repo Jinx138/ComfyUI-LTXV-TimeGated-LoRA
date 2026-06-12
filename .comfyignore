@@ -1,0 +1,19 @@
+# Large/demo assets kept on GitHub but not needed for installation
+examples/videos/
+*.mp4
+*.mov
+*.webm
+
+# Development / local clutter
+__pycache__/
+*.pyc
+*.pyo
+*.bak
+*.tmp
+.DS_Store
+.vscode/
+.idea/
+
+# Local test outputs
+outputs/
+test_outputs/
