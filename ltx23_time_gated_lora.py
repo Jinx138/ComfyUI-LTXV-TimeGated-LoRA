@@ -1,7 +1,7 @@
 """
-ComfyUI-LTXV-TimeGated-LoRA v1.0rc1
+ComfyUI-LTXV-TimeGated-LoRA v1.1
 
-Production release candidate: temporal visual LoRA gating for LTX 2.3 video models.
+Development candidate: temporal visual LoRA envelope/gating for LTX 2.3 video models with envelope-data output.
 
 Scope:
 - one or more stacked visual temporal LoRA nodes; audio LoRA layers are deliberately ignored in the v1.0 scope
@@ -189,6 +189,266 @@ def _build_effect_region_profile(
         _crossfade_boundary(profile, region_end, float(strength_during), float(strength_after), int(transition_frames))
 
     return profile, (region_start, region_end)
+
+
+ENVELOPE_MODES = [
+    "local",
+    "hold_strength",
+    "transition_frames",
+]
+
+RAMP_MODES = [
+    "flat",
+    "q_curve",
+]
+
+
+def _q_mix(t: torch.Tensor, q: float) -> torch.Tensor:
+    """Front-loaded power curve used by the v1.1 envelope modes.
+
+    Roadmap semantics:
+    - q = 1.0 is linear
+    - q > 1.0 changes steeply at the beginning of the ramp segment
+    - q < 1.0 delays the stronger change toward the end
+
+    This is the ease-out family: 1 - (1 - t) ** q.
+    """
+    q = max(float(q), 1e-6)
+    return 1.0 - torch.pow(1.0 - torch.clamp(t, 0.0, 1.0), q)
+
+
+def _fill_v11_ramp(
+    profile: torch.Tensor,
+    start: int,
+    end: int,
+    value_a: float,
+    value_b: float,
+    ramp_mode: str,
+    ramp_q: float,
+) -> None:
+    total_frames = int(profile.numel())
+    start = max(0, min(total_frames, int(start)))
+    end = max(start, min(total_frames, int(end)))
+    width = end - start
+    if width <= 0:
+        return
+
+    if ramp_mode == "flat":
+        profile[start:end] = float(value_a)
+        return
+    if ramp_mode != "q_curve":
+        raise ValueError(f"Unknown ramp_mode: {ramp_mode}")
+
+    if width == 1:
+        profile[start:end] = float(value_b)
+        return
+    t = torch.linspace(0.0, 1.0, steps=width, dtype=torch.float32)
+    mix = _q_mix(t, float(ramp_q))
+    profile[start:end] = float(value_a) + (float(value_b) - float(value_a)) * mix
+
+
+def _build_v11_effect_region_profile(
+    *,
+    total_frames: int,
+    effect_region: str,
+    strength_before: float,
+    strength_during: float,
+    strength_after: float,
+    ramp_mode: str,
+    ramp_q: float,
+    hold_strength: bool,
+) -> Tuple[torch.Tensor, Dict]:
+    if total_frames <= 0:
+        raise ValueError("total_frames must be > 0")
+    if effect_region not in EFFECT_REGIONS:
+        raise ValueError(f"Unknown effect_region: {effect_region}")
+    if ramp_mode not in RAMP_MODES:
+        raise ValueError(f"Unknown ramp_mode: {ramp_mode}")
+
+    start_frac, end_frac = EFFECT_REGIONS[effect_region]
+    region_start = int(round(total_frames * start_frac))
+    region_end = int(round(total_frames * end_frac))
+    region_start = max(0, min(total_frames, region_start))
+    region_end = max(region_start + 1, min(total_frames, region_end))
+    region_len = max(1, region_end - region_start)
+
+    before_start = max(0, region_start - region_len)
+    after_end = min(total_frames, region_end + region_len)
+
+    # Snap one-frame rounding leftovers at clip boundaries into the adjacent neighbor segment.
+    if before_start <= 1:
+        before_start = 0
+    if total_frames - after_end <= 1:
+        after_end = total_frames
+
+    # v1.1rc7 semantics:
+    # Both local and hold_strength hold strength_before/strength_after outside the
+    # immediate ramp segments. This avoids surprising hard drops to an implicit
+    # outside baseline and makes strength_before/after stable target levels.
+    #
+    # With q_curve, only the immediate neighboring segments become ramps:
+    #   earlier timeline     : strength_before
+    #   preceding neighbor   : strength_before -> strength_during
+    #   active region        : strength_during
+    #   following neighbor   : strength_during -> strength_after
+    #   later timeline       : strength_after
+    #
+    # With flat, this collapses to before/during/after hold behavior.
+    profile = torch.empty((total_frames,), dtype=torch.float32)
+    profile[:region_start] = float(strength_before)
+    profile[region_start:region_end] = float(strength_during)
+    if region_end < total_frames:
+        profile[region_end:] = float(strength_after)
+
+    if ramp_mode == "q_curve":
+        if before_start < region_start:
+            _fill_v11_ramp(profile, before_start, region_start, float(strength_before), float(strength_during), ramp_mode, float(ramp_q))
+        if region_end < after_end:
+            _fill_v11_ramp(profile, region_end, after_end, float(strength_during), float(strength_after), ramp_mode, float(ramp_q))
+
+    meta = {
+        "region_start": region_start,
+        "region_end": region_end,
+        "region_len": region_len,
+        "before_neighbor_start": before_start,
+        "before_neighbor_end": region_start,
+        "after_neighbor_start": region_end,
+        "after_neighbor_end": after_end,
+        "hold_strength": bool(hold_strength),
+        "local_baseline_strength": None,
+        "ramp_q_formula": "mix = 1 - (1 - t) ** q; q>1 front-loaded, q<1 delayed",
+    }
+    return profile, meta
+
+
+def _plateau_frames(profile: torch.Tensor, target: float, eps: float = 1e-5) -> int:
+    return int((torch.abs(profile - float(target)) <= eps).sum().item())
+
+def _profile_samples(profile: torch.Tensor) -> List[Dict]:
+    total = int(profile.numel())
+    if total <= 0:
+        return []
+    idxs = [0, total // 8, total // 4, max(0, total // 3), total // 2, min(total - 1, (2 * total) // 3), (3 * total) // 4, (7 * total) // 8, total - 1]
+    # keep order while removing duplicates
+    seen = set()
+    out = []
+    for idx in idxs:
+        idx = int(max(0, min(total - 1, idx)))
+        if idx in seen:
+            continue
+        seen.add(idx)
+        out.append({
+            "frame": idx,
+            "pos": round(idx / float(max(1, total - 1)), 4),
+            "value": round(float(profile[idx].item()), 6),
+        })
+    return out
+
+
+def _tensor_to_rounded_list(t: torch.Tensor, ndigits: int = 6) -> List[float]:
+    return [round(float(x), ndigits) for x in t.detach().cpu().to(torch.float32).flatten().tolist()]
+
+
+def _build_envelope_data(
+    *,
+    version: str,
+    total_frames: int,
+    latent_frames: int,
+    temporal_compression: int,
+    timing_source: str,
+    fps: float,
+    schedule_mode: str,
+    effect_region: str,
+    envelope_mode: str,
+    strength_model: float,
+    strength_before: float,
+    strength_during: float,
+    strength_after: float,
+    ramp_mode: str,
+    ramp_q: float,
+    transition_frames: int,
+    segment_lengths: str,
+    segment_strengths: str,
+    memory_mode: str,
+    frame_profile: torch.Tensor,
+    latent_profile: torch.Tensor,
+    meta: Dict,
+    warnings: List[str],
+    schedule_description: str,
+    lora_name: str = "",
+) -> Dict:
+    effective_profile = frame_profile.detach().cpu().to(torch.float32) * float(strength_model)
+    meta = dict(meta or {})
+    data = {
+        "version": version,
+        "source_node": "LTXV Time-Gated LoRA (LTX 2.3)",
+        "total_frames": int(total_frames),
+        "latent_frames": int(latent_frames),
+        "temporal_compression": int(temporal_compression),
+        "timing_source": str(timing_source),
+        "fps": float(fps),
+        "schedule_mode": schedule_mode,
+        "effect_region": effect_region,
+        "envelope_mode": envelope_mode,
+        "strength_model": float(strength_model),
+        "lora_strength": float(strength_model),
+        "strength_before": float(strength_before),
+        "strength_during": float(strength_during),
+        "strength_after": float(strength_after),
+        "local_baseline_strength": None,
+        "ramp_mode": ramp_mode,
+        "ramp_q": float(ramp_q),
+        "transition_frames": int(transition_frames),
+        "segment_lengths": str(segment_lengths),
+        "segment_strengths": str(segment_strengths),
+        "memory_mode": memory_mode,
+        "lora_name": lora_name,
+        "schedule_description": schedule_description,
+        "meta": meta,
+        "frame_min": float(frame_profile.min().item()) if frame_profile.numel() else 0.0,
+        "frame_max": float(frame_profile.max().item()) if frame_profile.numel() else 0.0,
+        "latent_min": float(latent_profile.min().item()) if latent_profile.numel() else 0.0,
+        "latent_max": float(latent_profile.max().item()) if latent_profile.numel() else 0.0,
+        "effective_min": float(effective_profile.min().item()) if effective_profile.numel() else 0.0,
+        "effective_max": float(effective_profile.max().item()) if effective_profile.numel() else 0.0,
+        "selected_region_frames": (int(meta.get("region_end", 0)) - int(meta.get("region_start", 0))) if "region_start" in meta and "region_end" in meta else None,
+        "full_strength_frames": _plateau_frames(frame_profile, float(strength_during)),
+        "samples": _profile_samples(frame_profile),
+        "warnings": list(warnings or []),
+        "frame_profile": _tensor_to_rounded_list(frame_profile),
+        "latent_profile": _tensor_to_rounded_list(latent_profile),
+        "effective_frame_profile": _tensor_to_rounded_list(effective_profile),
+        "q_semantics": {
+            "formula": "mix = 1 - (1 - t) ** q",
+            "q=1.0": "linear",
+            "q>1.0": "front-loaded / steeper at the beginning of the ramp segment",
+            "q<1.0": "delayed / stronger change toward the end of the ramp segment",
+        },
+    }
+    return data
+
+
+def _build_v11_warnings(
+    *,
+    envelope_mode: str,
+    ramp_mode: str,
+    ramp_q: float,
+    meta: Dict,
+    total_frames: int,
+    strength_before: float,
+    strength_during: float,
+    strength_after: float,
+) -> List[str]:
+    warnings: List[str] = []
+    if ramp_mode == "q_curve" and abs(float(ramp_q) - 1.0) < 1e-6:
+        warnings.append("q_curve q=1.0 is linear")
+
+    if envelope_mode in ("local", "hold_strength") and ramp_mode == "q_curve":
+        if abs(float(strength_before) - float(strength_during)) < 1e-8:
+            warnings.append("incoming q_curve is flat because strength_before equals strength_during")
+        if abs(float(strength_after) - float(strength_during)) < 1e-8:
+            warnings.append("outgoing q_curve is flat because strength_after equals strength_during")
+    return warnings
 
 
 def _infer_ltx_latent_frames(video_latent) -> Tuple[int, str]:
@@ -652,32 +912,48 @@ class ApplyTimeGatedLoRAToModelLTX23:
                 "video_latent": ("LATENT", {
                     "tooltip": "REQUIRED timing reference: connect the final video-only LATENT after image/FLF conditioning and before AV concatenation. Do not connect an audio+video latent. The unchanged latent is passed through on the output for stacking additional LTXV Time-Gated LoRA nodes."
                 }),
+                "fps": ("FLOAT", {
+                    "default": 24.0, "min": 1.0, "max": 240.0, "step": 0.01,
+                    "tooltip": "Frames per second for envelope data/preview timing. Connect the same FPS value used by Video Combine or your workflow output. It does not change the envelope or sampling."
+                }),
                 "lora_name": (folder_paths.get_filename_list("loras"), {
-                    "tooltip": "Visual LTX 2.3 LoRA to time-gate. Audio LoRA layers are intentionally ignored in the v1.0 scope."
+                    "tooltip": "Visual LTX 2.3 LoRA to time-shape. Audio LoRA layers are intentionally ignored in the v1.1 scope."
                 }),
                 "strength_model": ("FLOAT", {
                     "default": 1.0, "min": -8.0, "max": 8.0, "step": 0.05,
-                    "tooltip": "Global LoRA multiplier. Effective strength equals strength_model × the active schedule value. LTX 2.3 LoRAs may require strengths above 1.0; signed values are valid for slider/transform LoRAs."
+                    "tooltip": "LoRA strength multiplier. Effective patch strength equals lora_strength × the local envelope value. LTX 2.3 LoRAs may require strengths above 1.0; signed values are valid for slider/transform LoRAs."
                 }),
                 "schedule_mode": (["effect_region", "manual_frames"], {
                     "default": "effect_region",
-                    "tooltip": "Choose effect_region for simple placement or manual_frames for exact segment control. REQUIRED: connect the final video-only video_latent so the schedule follows the actual rendered LTX timeline. With PromptRelay, leave segment_lengths empty for equal thirds/quarters/halves and use matching | prompt segments."
+                    "tooltip": "effect_region uses the v1.1 temporal envelope controls. manual_frames preserves exact CSV segment scheduling and transition_frames crossfades."
                 }),
                 "effect_region": (list(EFFECT_REGIONS.keys()), {
                     "default": "middle third",
-                    "tooltip": "Used only in effect_region mode. Select the interval controlled by strength_during."
+                    "tooltip": "Used only in effect_region mode. Select the active interval controlled by strength_during. Neighbor segments are resolved from this region and the video_latent timeline."
+                }),
+                "envelope_mode": (ENVELOPE_MODES, {
+                    "default": "local",
+                    "tooltip": "local: strength_before and strength_after are stable levels before/after the active region; q_curve uses only the immediate neighbor segments as ramps into/out of strength_during. hold_strength is kept as a compatibility/explicit hold mode. transition_frames: before/during/after zones with boundary crossfades controlled by transition_frames."
                 }),
                 "strength_before": ("FLOAT", {
                     "default": 0.0, "min": -8.0, "max": 8.0, "step": 0.05,
-                    "tooltip": "Used only in effect_region mode. Schedule multiplier before the selected region."
+                    "tooltip": "Target LoRA envelope level before the active region. In local/hold_strength modes it is held across the earlier timeline; q_curve uses the immediate preceding neighbor segment as the ramp from this value into strength_during."
                 }),
                 "strength_during": ("FLOAT", {
                     "default": 1.0, "min": -8.0, "max": 8.0, "step": 0.05,
-                    "tooltip": "Used only in effect_region mode. Schedule multiplier inside the selected region."
+                    "tooltip": "Target LoRA envelope value inside the selected active region."
                 }),
                 "strength_after": ("FLOAT", {
                     "default": 0.0, "min": -8.0, "max": 8.0, "step": 0.05,
-                    "tooltip": "Used only in effect_region mode. Schedule multiplier after the selected region."
+                    "tooltip": "Target LoRA envelope level after the active region. In local/hold_strength modes it is held across the later timeline; q_curve uses the immediate following neighbor segment as the ramp from strength_during down/up to this value."
+                }),
+                "ramp_mode": (RAMP_MODES, {
+                    "default": "flat",
+                    "tooltip": "flat uses hard segment/envelope values and ignores ramp_q. q_curve shapes transitions over the full neighboring segment length; transition_frames is not used by v1.1 envelope modes."
+                }),
+                "ramp_q": ("FLOAT", {
+                    "default": 1.0, "min": 0.05, "max": 8.0, "step": 0.05,
+                    "tooltip": "Used only by q_curve. q=1 linear; q>1 front-loaded/steeper at the beginning of the ramp segment; q<1 delayed/slower start. Ignored by flat and legacy v1.0 transition mode."
                 }),
                 "segment_lengths": ("STRING", {
                     "default": "80,81,80", "multiline": False,
@@ -688,8 +964,8 @@ class ApplyTimeGatedLoRAToModelLTX23:
                     "tooltip": "Used only in manual_frames mode. Comma-separated multipliers paired with segment_lengths; signed and decimal values are valid, for example 0,-1,1.5."
                 }),
                 "transition_frames": ("INT", {
-                    "default": 16, "min": 0, "max": 2048, "step": 1,
-                    "tooltip": "Boundary crossfade in rendered frames. Best practice: start with 8–16 frames for ordinary style/effect reveals (about 0.33–0.67 s at 24 fps); use 0 only for intentionally hard switches, and try 16–32 for strong transformations."
+                    "default": 16, "min": 0, "max": 4096, "step": 1,
+                    "tooltip": "Used only by manual_frames and envelope_mode=transition_frames. Ignored by v1.1 local/hold_strength envelope modes, where the neighboring segment length defines the ramp duration."
                 }),
                 "memory_mode": (["optimized_safe", "optimized_low_vram_inplace"], {
                     "default": "optimized_safe",
@@ -699,27 +975,31 @@ class ApplyTimeGatedLoRAToModelLTX23:
         }
 
 
-    RETURN_TYPES = ("MODEL", "LATENT", "STRING")
-    RETURN_NAMES = ("model", "video_latent", "schedule_info")
+    RETURN_TYPES = ("MODEL", "LATENT", "STRING", "LTXV_ENVELOPE_DATA")
+    RETURN_NAMES = ("model", "video_latent", "schedule_info", "data")
     FUNCTION = "apply"
     CATEGORY = "LTXV/LoRA"
     DESCRIPTION = (
-        "v1.0rc1: stackable runtime-safe visual time-gated LoRA for LTX 2.3. "
-        "Connect the final video-only latent for timeline resolution; it is passed through for clean multi-node stacking. "
-        "Chain one or more instances last in the MODEL path before the sampler/guider. Audio layers are intentionally ignored."
+        "v1.1: stackable runtime-safe visual time-shaped LoRA envelope for LTX 2.3 with data output. "
+        "Adds local/hold_strength envelope modes and q_curve ramps. Connect the final video-only latent for timeline resolution; "
+        "chain one or more instances last in the MODEL path before the sampler/guider. Audio layers are intentionally ignored."
     )
 
     def apply(
         self,
         model,
         video_latent,
+        fps: float,
         lora_name: str,
         strength_model: float,
         schedule_mode: str,
         effect_region: str,
+        envelope_mode: str,
         strength_before: float,
         strength_during: float,
         strength_after: float,
+        ramp_mode: str,
+        ramp_q: float,
         segment_lengths: str,
         segment_strengths: str,
         transition_frames: int,
@@ -728,6 +1008,9 @@ class ApplyTimeGatedLoRAToModelLTX23:
         temporal_compression = LTX23_TEMPORAL_COMPRESSION
         resolved_frames, resolved_latent_frames, timing_source = _resolve_timing(video_latent)
         audio_note = "audio_layers=ignored_by_design"
+        schedule_warnings: List[str] = []
+        region_start = region_end = None
+        envelope_meta: Dict = {}
 
         if schedule_mode == "manual_frames":
             frame_profile = _build_frame_profile(
@@ -736,20 +1019,63 @@ class ApplyTimeGatedLoRAToModelLTX23:
                 segment_strengths=segment_strengths,
                 transition_frames=int(transition_frames),
             )
-            schedule_description = f"manual_frames lengths={segment_lengths} strengths={segment_strengths}"
-        elif schedule_mode == "effect_region":
-            frame_profile, (region_start, region_end) = _build_effect_region_profile(
-                total_frames=resolved_frames,
-                effect_region=effect_region,
-                strength_before=float(strength_before),
-                strength_during=float(strength_during),
-                strength_after=float(strength_after),
-                transition_frames=int(transition_frames),
-            )
             schedule_description = (
-                f"effect_region='{effect_region}' frames=[{region_start},{region_end}) "
-                f"strengths={float(strength_before):.3f},{float(strength_during):.3f},{float(strength_after):.3f}"
+                f"manual_frames lengths={segment_lengths} strengths={segment_strengths} "
+                f"transition_frames={int(transition_frames)}"
             )
+        elif schedule_mode == "effect_region":
+            if envelope_mode in ("transition_frames", "v1.0rc1_transition_frames"):
+                frame_profile, (region_start, region_end) = _build_effect_region_profile(
+                    total_frames=resolved_frames,
+                    effect_region=effect_region,
+                    strength_before=float(strength_before),
+                    strength_during=float(strength_during),
+                    strength_after=float(strength_after),
+                    transition_frames=int(transition_frames),
+                )
+                envelope_meta = {
+                    "region_start": region_start,
+                    "region_end": region_end,
+                    "mode": envelope_mode,
+                }
+                schedule_description = (
+                    f"effect_region='{effect_region}' envelope={envelope_mode} frames=[{region_start},{region_end}) "
+                    f"strengths={float(strength_before):.3f},{float(strength_during):.3f},{float(strength_after):.3f} "
+                    f"transition_frames={int(transition_frames)}"
+                )
+            elif envelope_mode in ("local", "hold_strength"):
+                hold_strength = envelope_mode == "hold_strength"
+                frame_profile, envelope_meta = _build_v11_effect_region_profile(
+                    total_frames=resolved_frames,
+                    effect_region=effect_region,
+                    strength_before=float(strength_before),
+                    strength_during=float(strength_during),
+                    strength_after=float(strength_after),
+                    ramp_mode=ramp_mode,
+                    ramp_q=float(ramp_q),
+                    hold_strength=hold_strength,
+                )
+                region_start = int(envelope_meta["region_start"])
+                region_end = int(envelope_meta["region_end"])
+                schedule_warnings = _build_v11_warnings(
+                    envelope_mode=envelope_mode,
+                    ramp_mode=ramp_mode,
+                    ramp_q=float(ramp_q),
+                    meta=envelope_meta,
+                    total_frames=resolved_frames,
+                    strength_before=float(strength_before),
+                    strength_during=float(strength_during),
+                    strength_after=float(strength_after),
+                )
+                schedule_description = (
+                    f"effect_region='{effect_region}' envelope={envelope_mode} frames=[{region_start},{region_end}) "
+                    f"neighbor_before=[{envelope_meta['before_neighbor_start']},{envelope_meta['before_neighbor_end']}) "
+                    f"neighbor_after=[{envelope_meta['after_neighbor_start']},{envelope_meta['after_neighbor_end']}) "
+                    f"strengths={float(strength_before):.3f},{float(strength_during):.3f},{float(strength_after):.3f} "
+                    f"ramp_mode={ramp_mode} ramp_q={float(ramp_q):.3f} local_baseline=0.000"
+                )
+            else:
+                raise ValueError(f"Unsupported envelope_mode: {envelope_mode}")
         else:
             raise ValueError(f"Unsupported schedule_mode: {schedule_mode}")
 
@@ -763,12 +1089,48 @@ class ApplyTimeGatedLoRAToModelLTX23:
                 f"resolved_latent_frames={resolved_latent_frames}."
             )
 
+        effective_profile = frame_profile * float(strength_model)
+        effective_min = float(effective_profile.min().item())
+        effective_max = float(effective_profile.max().item())
+        selected_region_frames = (int(region_end) - int(region_start)) if region_start is not None and region_end is not None else "n/a"
+        full_strength_frames = _plateau_frames(frame_profile, float(strength_during))
+        warning_text = "; ".join(schedule_warnings) if schedule_warnings else "none"
+        envelope_data = _build_envelope_data(
+            version="LTXV Time-Gated LoRA v1.1",
+            total_frames=resolved_frames,
+            latent_frames=resolved_latent_frames,
+            temporal_compression=temporal_compression,
+            timing_source=timing_source,
+            fps=float(fps),
+            schedule_mode=schedule_mode,
+            effect_region=effect_region,
+            envelope_mode=envelope_mode,
+            strength_model=float(strength_model),
+            strength_before=float(strength_before),
+            strength_during=float(strength_during),
+            strength_after=float(strength_after),
+            ramp_mode=ramp_mode,
+            ramp_q=float(ramp_q),
+            transition_frames=int(transition_frames),
+            segment_lengths=segment_lengths,
+            segment_strengths=segment_strengths,
+            memory_mode=memory_mode,
+            frame_profile=frame_profile,
+            latent_profile=latent_profile,
+            meta=envelope_meta,
+            warnings=schedule_warnings,
+            schedule_description=schedule_description,
+            lora_name=lora_name,
+        )
+
         if abs(float(strength_model)) < 1e-8 or float(frame_profile.abs().max()) < 1e-8:
             return (
                 model,
                 video_latent,
-                f"v1.0rc1 passthrough; {schedule_description}; frames={resolved_frames}; "
-                f"latent_frames={resolved_latent_frames}; transition_frames={transition_frames}; {audio_note}",
+                f"v1.1 passthrough; {schedule_description}; frames={resolved_frames}; "
+                f"latent_frames={resolved_latent_frames}; fps={float(fps):.3f}; selected_region_frames={selected_region_frames}; "
+                f"full_strength_frames={full_strength_frames}; warnings={warning_text}; {audio_note}",
+                envelope_data,
             )
 
         lora_path = _get_lora_path(lora_name)
@@ -776,7 +1138,7 @@ class ApplyTimeGatedLoRAToModelLTX23:
         pairs = _find_lora_pairs(sd)
         if not pairs:
             raise ValueError(
-                f"No supported LoRA tensors found in {lora_name}. v1.0rc1 supports keys ending in "
+                f"No supported LoRA tensors found in {lora_name}. v1.1 supports keys ending in "
                 f".lora_down.weight/.lora_up.weight or .lora_A.weight/.lora_B.weight."
             )
 
@@ -785,8 +1147,8 @@ class ApplyTimeGatedLoRAToModelLTX23:
         stale_wrappers = [n for n, m in modules.items() if type(m).__name__ == "TemporalLoRALinearWrapper"]
         if stale_wrappers:
             raise RuntimeError(
-                "Persistent TemporalLoRALinearWrapper objects from v0.1-v0.1.2 are already present "
-                "in the live model. Restart ComfyUI before testing v1.0rc1. "
+                "Persistent TemporalLoRALinearWrapper objects from older builds are already present "
+                "in the live model. Restart ComfyUI before testing v1.1. "
                 f"First stale layer: {stale_wrappers[0]}"
             )
 
@@ -798,7 +1160,7 @@ class ApplyTimeGatedLoRAToModelLTX23:
             if module_name is None:
                 skipped.append((pair.module_hint, "target module not found"))
                 continue
-            # Audio is expressly out of scope for v1.0.
+            # Audio is expressly out of scope for v1.1.
             if ".audio_" in module_name:
                 audio_skipped += 1
                 skipped.append((module_name, "audio layer omitted by design"))
@@ -835,16 +1197,16 @@ class ApplyTimeGatedLoRAToModelLTX23:
         out.set_model_unet_function_wrapper(runtime_wrapper)
 
         info = (
-            f"v1.0rc1; lora={lora_name}; mode={schedule_mode}; {schedule_description}; "
-            f"frames={resolved_frames}; latent_frames={resolved_latent_frames}; transition_frames={transition_frames}; "
-            f"prepared_visual_layers={len(specs)}; audio_skipped={audio_skipped}; "
-            f"effective_range={float(strength_model) * float(frame_profile.min()):.3f}..{float(strength_model) * float(frame_profile.max()):.3f}; "
-            f"memory_mode={memory_mode}; {audio_note}; place_last_in_MODEL_chain_before_sampler_or_guider"
+            f"v1.1; lora={lora_name}; mode={schedule_mode}; {schedule_description}; "
+            f"frames={resolved_frames}; latent_frames={resolved_latent_frames}; selected_region_frames={selected_region_frames}; "
+            f"full_strength_frames={full_strength_frames}; prepared_visual_layers={len(specs)}; audio_skipped={audio_skipped}; "
+            f"effective_range={effective_min:.3f}..{effective_max:.3f}; memory_mode={memory_mode}; "
+            f"warnings={warning_text}; {audio_note}; place_last_in_MODEL_chain_before_sampler_or_guider"
         )
         logging.info("%s %s", LOG_PREFIX, info)
         if skipped:
             logging.info("%s skipped first entries: %s", LOG_PREFIX, skipped[:10])
-        return (out, video_latent, info)
+        return (out, video_latent, info, envelope_data)
 
 
 NODE_CLASS_MAPPINGS = {

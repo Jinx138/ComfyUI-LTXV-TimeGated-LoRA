@@ -1,4 +1,7 @@
-# ComfyUI-LTXV-TimeGated-LoRA v1.0rc1
+# ComfyUI-LTXV-TimeGated-LoRA v1.1rc4-dev
+
+> **v1.1rc4-dev experimental envelope build:** adds `local` / `hold_strength` envelope modes, `q_curve` ramps, a reusable `data` output on the Inspector, and a CPU-rendered `LTXV Envelope Curve Preview (CPU)` node. `transition_frames` is only used by `manual_frames` and `transition_frames` legacy mode.
+
 
 Node: **LTXV Time-Gated LoRA (LTX 2.3)**
 
@@ -165,67 +168,62 @@ A single continuous I2V run showing an adult appearance, a younger reveal and an
 
 A realistic scene reveals a Claymation style only in the middle third, then returns to realism. The sign's blank reverse side acts as a natural occluder/reveal transition. This workflow is the recommended release-candidate smoke test.
 
+
+## Envelope diagnostics / curve preview
+
+This development build contains three nodes:
+
+- **LTXV Time-Gated LoRA (LTX 2.3)** — productive model patching node.
+- **LTXV Temporal Envelope Inspector (v1.1rc4-dev)** — non-patching audit node. It resolves the frame profile, latent profile, regions, samples and warnings.
+- **LTXV Envelope Curve Preview (CPU)** — renders a small timeline/strength analyzer image from the Inspector's combined `data` output.
+
+Recommended diagnostic wiring:
+
+```text
+video_latent
+  → LTXV Temporal Envelope Inspector
+      data → LTXV Envelope Curve Preview (CPU) → Preview Image
+      report_md → Show Text / PreviewAny
+```
+
+The `data` output is a single custom payload (`LTXV_ENVELOPE_DATA`) so the preview node does not need separate cables for timeline, profile, regions and warnings. Rendering is CPU-side via PIL/numpy and returns a normal ComfyUI `IMAGE`.
+
 ## Installation
 
-Extract the folder into ComfyUI `custom_nodes`, restart ComfyUI, and add a fresh instance of **LTXV Time-Gated LoRA (LTX 2.3)** to the workflow. Because v1.0rc1 adds a `video_latent` output, replace older node instances instead of relying on stored widget/output indexes.
+Extract the folder into ComfyUI `custom_nodes`, restart ComfyUI, and add a fresh instance of **LTXV Time-Gated LoRA (LTX 2.3)** to the workflow. Because v1.1rc4-dev adds envelope diagnostics and preview outputs, replace older node instances instead of relying on stored widget/output indexes.
 
+## v1.1 visual envelope preview
 
-## Included example workflow: Claymation Style Reveal
+v1.1 adds a CPU-rendered curve preview that shows the actual local LoRA envelope over the full video timeline.
 
-File:
+The preview is useful for checking selected regions, comparing stacked Time-Gated LoRA nodes, debugging `flat` versus `q_curve`, and verifying `data` / `data_2` overlays before sampling.
 
-```text
-workflows/PromptRelay_LTXV_TimeGatedLoRA_Claymation_v1.0rc1.json
-```
+### Example: late q-curve gate
 
-This release-candidate example is a PromptRelay LTX 2.3 I2V workflow validated with one active **LTXV Time-Gated LoRA (LTX 2.3)** node:
+![Late q-curve gate](examples/images/curve_q_late_gate.png)
 
-```text
-effect_region:     middle third
-strength_model:    5.0
-strength_before:   0
-strength_during:   1
-strength_after:    0
-transition_frames: 16
-memory_mode:       optimized_safe
-```
+A delayed q-curve where the LoRA stays inactive for most of the clip and ramps strongly into the last third.
 
-Key settings captured in the validated workflow export:
+### Example: three-step flat envelope
 
-```text
-fps:                       24
-sampler:                   euler_ancestral
-scheduler:                 linear_quadratic
-steps:                     10
-cfg:                       1.3
-I2V image anchor strength: 0.25
-PromptRelay epsilon:       0.3
-```
+![Rain step gate](examples/images/curve_flat_step_gate.png)
 
-PromptRelay `segment_lengths` is left empty in this example. Its three `|`-separated local prompt segments are therefore distributed evenly across the clip, matching the Time-Gated LoRA `middle third` region.
+A flat local envelope using one node as a 0 → 0.5 → 1 step controller.
 
-### Reproducing the Claymation example
+### Example: stacked Time-Gated LoRA nodes
 
-1. Copy `examples/inputs/claymation_demo_input.jpg` to your ComfyUI `input/` directory.
-2. Load `workflows/PromptRelay_LTXV_TimeGatedLoRA_Claymation_v1.0rc1.json`.
-3. Install or supply the model and LoRA dependencies listed below.
-4. Adjust local model filenames if your ComfyUI installation uses different folder names.
+![Stacked wiring example](examples/images/workflow_stacked_wiring.png)
 
-## Demo media
+Two Time-Gated LoRA nodes can be stacked in the MODEL path. Their `data` outputs can be connected to the Curve Preview / Analyze node as `data` and `data_2` to compare both envelopes in one plot.
 
-* [Age Slider Reveal — directional transformation demo](examples/videos/Age_Slider_Reveal_Licon_Enabled.mp4)
-* [Claymation Style Reveal — realistic → claymation → realistic](examples/videos/Claymation_Style_Reveal_Licon_Enabled.mp4)
+### Production workflow example
 
-The bundled demo video copies have been remuxed without user or workflow metadata.
+The repository includes a production/testing workflow:
 
-## Demo dependencies and credits
+`workflows/production/PromptRelay_LTXV_TimeGated-LoRA_Rain_StepGate_v1.1.json`
 
-Third-party LoRAs used in demo workflows or videos are **not included** in this repository and are not required to use the custom node itself.
+This is not a minimal install test. Bypassed nodes are intentionally kept for A/B testing, alternate gate setups, preview inspection, last-frame export, upscaling, and production debugging. Input images and third-party LoRAs are not included.
 
-| Demo asset / LoRA                                                                      | Role in the demonstration                                                                 | Credit / source status                                                                                                          |
-| -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Claymation LoRA (`LTX/Claymation.safetensors` in the example workflow)                 | Time-gated style LoRA active in the middle third                                          | [vrgamedevgirl84 — LTX 2.3 Clay Mation Style LoRA](https://huggingface.co/vrgamedevgirl84/LTX_2.3_Clay_Mation_Style_LoRa)       |
-| Licon VBVR I2V LoRA (`LTX/Ltx2.3-Licon-VBVR-I2V-390K-R32.safetensors`, strength `1.0`) | Quality/consistency LoRA retained because disabling it substantially reduced demo quality | [LiconStudio — Ltx2.3-VBVR-lora-I2V](https://huggingface.co/LiconStudio/Ltx2.3-VBVR-lora-I2V)                                   |
-| Age Slider LoRA (`age_slider_ltx23_v_0_5.safetensors`)                                 | Directional age-transformation demo video                                                 | Third-party LoRA; original source and author could not currently be verified. Weights are not distributed with this repository. |
+### Note on stochastic / particle LoRAs
 
-
+Time-gated curves are especially useful for semantic or stylistic transformations such as realism ↔ claymation, age sliders, mood/look changes, or character/style intensity. Fine stochastic detail LoRAs such as rain, snow, dust, film grain, water ripples, or particle effects may flicker under gradual curves because the model keeps renegotiating high-frequency details over time. For these LoRAs, test lower `lora_strength`, `flat` instead of a long `q_curve`, a non-zero `strength_before`, or constant full-clip application.

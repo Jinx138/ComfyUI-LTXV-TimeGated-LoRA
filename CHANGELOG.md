@@ -34,3 +34,45 @@
 ## v0.4
 
 - Added `effect_region`, optional latent timing and the low-rank VRAM-optimized gating path.
+
+
+## v1.1rc5-dev
+- Preview/Analyze layout polish: narrower canvas, larger fonts, dedicated legend row, improved truncation.
+
+
+## v1.1rc6-dev
+- Preview/Analyze layout polish: taller 900x600 canvas and reflowed header to avoid overlap.
+
+## v1.1rc7-dev
+- Local envelope before/after levels now hold outside the immediate ramp window.
+- Removed obsolete local baseline hard-step warnings.
+- Preview typography adjusted closer to ComfyUI system sizing.
+
+## v1.1rc8-dev
+- Curve Preview Y-axis no longer expands below 0 when values only exceed 1.0 upward.
+- Curve Preview fonts increased slightly for readability.
+
+## v1.1
+- Preview now shows thicker frame-envelope curves only; latent-average overlay is hidden for release clarity.
+- Renamed transition-frame envelope mode to `transition_frames` while keeping the old value accepted internally for compatibility.
+
+## v1.1
+- Curve Preview subtitle now shows separate, equal summary lines for data and data_2.
+
+## v1.1
+- Curve Preview overlay header now shows mode/region/ramp per data input instead of a data-only global mode line.
+
+## v1.1
+- Curve Preview / Analyze now accepts data_2 alone when data is missing/bypassed.
+- data/data_2 are optional with a clear error only if both are absent.
+
+## v1.1
+- Curve Preview / Analyze default image size increased to 1200x800.
+- No behavior change to the data/data_2 fallback logic from v1.1.
+
+## v1.1
+- Curve Preview / Analyze typography increased for 1200x800 output.
+- Header/legend spacing adjusted and test renders generated.
+
+## v1.1
+- Removed the `ramp_q ignored in flat mode` warning from generated warnings and preview display.
