@@ -9,14 +9,12 @@ Temporally apply visual LTX 2.3 LoRAs to selected regions of a single continuous
 
 ## Scope
 
-- Visual LTX 2.3 LoRA layers only; temporal audio gating is intentionally not supported in v1.0.
+- Visual LTX 2.3 LoRA layers only; temporal audio gating is intentionally not yet supported.
 - `effect_region` mode for fast placement by halves, thirds or quarters.
 - `manual_frames` mode for exact signed multi-segment schedules.
 - Timing is derived from the required final **video-only** `video_latent`.
 - Multiple instances can be chained additively.
 - Low-rank temporal gating includes a safe mode and an experimental lower-VRAM in-place mode.
-
-The validated diagnostic build is kept separately as **v0.7.1**; its diagnostic probe is intentionally not exposed in the production release candidate.
 
 ## Placement
 
