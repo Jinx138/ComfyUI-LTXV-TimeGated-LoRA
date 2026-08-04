@@ -299,6 +299,16 @@ As always, generated-video behavior varies with model and LoRA content, so visua
 
 ---
 
+## Required companion node
+
+`LTXV Prompt Relay Encode (Scheduled)` requires an installed and enabled
+[ComfyUI-PromptRelay](https://github.com/kijai/ComfyUI-PromptRelay).
+
+The classic Time-Gated LoRA nodes, envelope tools, and Sigma Tail / Trim
+remain usable without it.
+
+--- 
+
 ## Prompt Relay attribution
 
 Prompt scheduling support references the Prompt Relay method by:
