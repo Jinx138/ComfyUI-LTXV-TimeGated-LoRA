@@ -1,6 +1,82 @@
-# ComfyUI-LTXV-TimeGated-LoRA v1.1
+# ComfyUI-LTXV-TimeGated-LoRA v1.3.0
 
-> **v1.1 envelope build:** adds `local` / `hold_strength` envelope modes, `q_curve` ramps, a reusable `data` output and a CPU-rendered `LTXV Envelope Curve Preview (CPU)` node. `transition_frames` is only used by `manual_frames` and `transition_frames` legacy mode.
+## Temporal Director
+
+The Temporal Director branch is intentionally limited to **max 4 prompt segments / 3 boundaries**. `LTXV Schedule Sync` tolerates missing `|` separators by reconstructing them from ordered `segment/scene/shot` labels or, as a fallback, 2-4 blank-line paragraphs. Scheduled q-curves use a half-cosine shoulder across segment boundaries. PromptRelay `epsilon` defines the coupled zero-position anchor, while `q_in_shift` / `q_out_shift` move the transition phase within the same segment timeline. The inward extrema (`q_in_shift=+1`, `q_out_shift=-1`) meet at the target midpoint and can form a centered LoRA peak. First and last targets use full, equally long virtual neighbor segments, so their curves behave exactly like internal curves and simply continue outside the visible clip. The preview presents seconds first and shows seconds for every segment and phase shift. Use `flat` for hard segment edges.
+
+> **v1.3.0 release:** keeps the established `LTXV Time-Gated LoRA (LTX 2.3)` node and adds the shared-schedule **Temporal Director** workflow beside it.
+
+## New Temporal Director nodes
+
+The Director branch makes one upstream schedule the single source of truth for PromptRelay and TimeGate timing.
+
+```text
+LTXV Schedule Sync
+    ├─ segment_data -> LTXV Prompt Relay Encode (Scheduled)
+    ├─ segment_data -> LTXV Time-Gated LoRA (Scheduled)
+    └─ segment_data -> LTXV Temporal Schedule Preview
+```
+
+### LTXV Schedule Sync
+
+- Takes the final video-only `video_latent`, `fps`, and pipe-separated `local_prompts`.
+- Prefers explicit `|` separators, but automatically reconstructs missing separators from ordered labels such as `segment 1:` / `scene 2:` / `shot 3:`.
+- If no labels are available, 2-4 blank-line paragraphs can be used as a fallback segment structure.
+- Emits exact visible-frame segment lengths such as `168,168,169`.
+- Supports `expected_segments` plus `warn/error` checks after recovery; repaired prompts are reported as normalizations rather than errors.
+- No independent manual-frame timeline; optional normalized boundary sliders/bar remain part of the shared Schedule Sync plan.
+
+### LTXV Prompt Relay Encode (Scheduled)
+
+- Adapter around Kijai PromptRelay.
+- No timeline UI and no manual segment length field.
+- Uses `segment_data.segment_texts` and `segment_data.segment_lengths_csv` from Schedule Sync.
+- Optional `RELAY_OPTIONS` input accepts Kijai's Prompt Relay Advanced Options.
+- Requires ComfyUI-PromptRelay to be installed/enabled.
+
+### LTXV Time-Gated LoRA
+
+- New scheduled TimeGate variant without `manual_frames` or `effect_region` presets.
+- Uses `target_segment` from the shared Schedule Sync segment plan.
+- `q_in` and `q_out` shape the incoming and outgoing neighboring-segment ramps.
+- `q_in_shift` / `q_out_shift` retain the range `-1.0..+1.0`, but now use segment-relative phase travel rather than one fixed softness width.
+- `q_in_shift=+1` completes the incoming ramp at the target midpoint; `q_out_shift=-1` starts the outgoing ramp there. Together they can produce a centered peak with little or no plateau.
+- The outward extrema reach the midpoint of the preceding/following segment; first/last targets use equally long virtual pre-roll/post-roll segments.
+- The envelope is assembled as `before -> incoming ramp -> during -> outgoing ramp -> after`, so `strength_during` remains active until the shifted outgoing transition actually starts.
+- Internal-segment `0.0` behavior remains unchanged; edge segments intentionally use the same full virtual-neighbor geometry as internal segments.
+- Intended to sit after PromptRelay Scheduled and before the sampler/guider.
+
+### LTXV Temporal Schedule Preview
+
+- Replaces the curve-only preview for Director workflows.
+- Shows total duration and segment time ranges in seconds first, with frame counts retained as secondary technical information.
+- Shows segment texts, Schedule Sync warnings, and up to four TimeGate curves. `max_text_chars` now accepts up to 640 characters per segment; visible lines are limited only by the selected preview height and box width.
+- Non-zero incoming/outgoing phase shifts appear as dashed `IN` / `OUT` markers and are reported in seconds and frames.
+
+## Director workflow sketch
+
+```text
+video_latent -> LTXV Schedule Sync
+
+MODEL -> LTXV Prompt Relay Encode (Scheduled)
+      -> LTXV Time-Gated LoRA (Scheduled) # target segment 1/2/3...
+      -> optional additional scheduled TimeGates
+      -> optional global/distill LoRA
+      -> sampler
+
+segment_data + TimeGate data outputs -> LTXV Temporal Schedule Preview -> Preview Image
+```
+
+The old nodes remain available for compatibility:
+
+- `LTXV Time-Gated LoRA (LTX 2.3)`
+- `LTXV Semantic Segment Planner`
+- `LTXV Envelope Curve Preview`
+- `LTXV Temporal Envelope Inspector`
+
+---
+
+## Legacy Time-Gated LoRA node
 
 
 Node: **LTXV Time-Gated LoRA (LTX 2.3)**
@@ -9,7 +85,7 @@ Temporally apply visual LTX 2.3 LoRAs to selected regions of a single continuous
 
 ## Scope
 
-- Visual LTX 2.3 LoRA layers only; temporal audio gating is intentionally not supported in v1.0.
+- Visual LTX 2.3 LoRA layers only; temporal audio gating is intentionally not supported in the current release.
 - `effect_region` mode for fast placement by halves, thirds or quarters.
 - `manual_frames` mode for exact signed multi-segment schedules.
 - Timing is derived from the required final **video-only** `video_latent`.
@@ -61,7 +137,8 @@ Do **not** connect an audio+video combined latent to `video_latent`. The node de
 - `schedule_mode`: `effect_region` or `manual_frames`.
 - `effect_region`, `strength_before`, `strength_during`, `strength_after`: used in `effect_region` mode.
 - `segment_lengths`, `segment_strengths`: used in `manual_frames` mode.
-- `transition_frames`: crossfade width at effect boundaries.
+- `q_in`, `q_out`: separate incoming/outgoing q-curve controls. Legacy `ramp_q` workflows are represented by both values using the old q value.
+- `transition_frames`: crossfade width at effect boundaries; defaults to `0` and is only used by manual/legacy transition modes.
 - `memory_mode`: `optimized_safe` by default; `optimized_low_vram_inplace` is experimental.
 
 The numeric strength widgets use practical `0.05` steps for mouse adjustment. `segment_strengths` remains a freely editable string for advanced schedules.
@@ -155,7 +232,7 @@ For convenient whole-second durations, prefer `24 fps`: whole seconds map cleanl
 - Each additional scheduled LoRA adds compute and VRAM pressure.
 - SageAttention is usable, but keep `allow_compile = false` when using this node.
 - `torch.compile` / `TorchCompileModelAdvanced` is not currently supported.
-- Temporal audio LoRA gating is not supported in v1.0.
+- Temporal audio LoRA gating is not supported in the current release.
 - A real LoRA may influence later video semantics after its active region even when the gate itself is temporally correct.
 
 ## Validated demo scenarios
@@ -171,10 +248,10 @@ A realistic scene reveals a Claymation style only in the middle third, then retu
 
 ## Envelope diagnostics / curve preview
 
-This development build contains three nodes:
+The legacy diagnostics path contains three nodes:
 
 - **LTXV Time-Gated LoRA (LTX 2.3)** — productive model patching node.
-- **LTXV Temporal Envelope Inspector (v1.1rc4-dev)** — non-patching audit node. It resolves the frame profile, latent profile, regions, samples and warnings.
+- **LTXV Temporal Envelope Inspector** — non-patching audit node. It resolves the frame profile, latent profile, regions, samples and warnings.
 - **LTXV Envelope Curve Preview (CPU)** — renders a small timeline/strength analyzer image from the Inspector's combined `data` output.
 
 Recommended diagnostic wiring:
@@ -190,7 +267,7 @@ The `data` output is a single custom payload (`LTXV_ENVELOPE_DATA`) so the previ
 
 ## Installation
 
-Extract the folder into ComfyUI `custom_nodes`, restart ComfyUI, and add a fresh instance of **LTXV Time-Gated LoRA (LTX 2.3)** to the workflow. Because v1.1rc4-dev adds envelope diagnostics and preview outputs, replace older node instances instead of relying on stored widget/output indexes.
+Extract or clone the repository into ComfyUI `custom_nodes`, restart ComfyUI, and hard-refresh the browser. Workflows created with development builds should use freshly added Scheduled nodes because their widget layout changed during the v1.3 development cycle.
 
 ## v1.1 visual envelope preview
 
@@ -236,3 +313,30 @@ This is not a minimal install test. Bypassed nodes are intentionally kept for A/
 ### Note on stochastic / particle LoRAs
 
 Time-gated curves are especially useful for semantic or stylistic transformations such as realism ↔ claymation, age sliders, mood/look changes, or character/style intensity. Fine stochastic detail LoRAs such as rain, snow, dust, film grain, water ripples, or particle effects may flicker under gradual curves because the model keeps renegotiating high-frequency details over time. For these LoRAs, test lower `lora_strength`, `flat` instead of a long `q_curve`, a non-zero `strength_before`, or constant full-clip application.
+
+## Sigma Tail utility
+
+`LTXV Sigma Tail / Trim` accepts native ComfyUI `SIGMAS` and outputs native `SIGMAS` again. It is intended for later LTX passes where the highest-noise portion of an existing scheduler curve should be skipped without converting sigmas to ordinary float lists.
+
+Supported modes include:
+
+- dropping a fixed number of leading sigma values;
+- keeping a fixed number or fraction of the tail;
+- starting at the first sigma at or below a chosen threshold;
+- optionally ensuring a final zero sigma.
+
+Example:
+
+```text
+BasicScheduler(linear_quadratic, 24 steps)
+→ LTXV Sigma Tail / Trim(start_at_or_below_sigma=0.80)
+→ sampler
+```
+
+## Dependencies and attribution
+
+The Scheduled PromptRelay adapter requires an installed and enabled `ComfyUI-PromptRelay`. It does not vendor the PromptRelay UI; see [NOTICE.md](NOTICE.md) for attribution and integration details.
+
+## Release history
+
+See [CHANGELOG.md](CHANGELOG.md) and [RELEASE_NOTES_v1.3.md](RELEASE_NOTES_v1.3.md).
