@@ -1,4 +1,4 @@
-# Large/demo assets kept on GitHub but not needed for installation
+# Large/demo assets kept out of install package
 examples/videos/
 *.mp4
 *.mov
@@ -13,7 +13,5 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
-
-# Local test outputs
 outputs/
 test_outputs/

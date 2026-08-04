@@ -1,5 +1,5 @@
 """
-LTXV Envelope Curve Preview / Analyze v1.1
+LTXV Envelope Curve Preview / Analyze v1.3.0
 
 CPU-side visual preview node for LTXV temporal envelope data.
 
@@ -191,8 +191,9 @@ def _lora_strength_label(data: Dict[str, Any]) -> str:
 def _mode_label(data: Dict[str, Any]) -> str:
     ramp_mode = data.get("ramp_mode", "")
     try:
-        q = float(data.get("ramp_q", 1.0))
-        q_part = f" q={q:.2f}" if ramp_mode == "q_curve" else ""
+        q_in = float(data.get("q_in", data.get("ramp_q", 1.0)))
+        q_out = float(data.get("q_out", data.get("ramp_q", q_in)))
+        q_part = f" q_in={q_in:.2f} / q_out={q_out:.2f}" if ramp_mode == "q_curve" else ""
     except Exception:
         q_part = ""
     return f"{data.get('envelope_mode')} / {data.get('effect_region')} / {ramp_mode}{q_part}"
@@ -216,24 +217,8 @@ def _profile_range(profile: List[float]) -> Tuple[float, float]:
     return float(min(profile)), float(max(profile))
 
 def _combined_warnings(data: Dict[str, Any], data_2: Optional[Dict[str, Any]]) -> List[str]:
-    warnings: List[str] = []
-    warnings.extend(str(w) for w in (data.get("warnings", []) or []))
-    if data_2 is not None:
-        warnings.extend(f"data_2: {w}" for w in (data_2.get("warnings", []) or []))
-        n1 = int(data.get("total_frames", 0) or 0)
-        n2 = int(data_2.get("total_frames", 0) or 0)
-        if n1 and n2 and n1 != n2:
-            warnings.append(f"Timeline mismatch: data has {n1} frames, data_2 has {n2} frames. Overlay may be misleading.")
-    # De-duplicate while preserving order.
-    out = []
-    seen = set()
-    for w in warnings:
-        if "ramp_q ignored in flat mode" in str(w):
-            continue
-        if w not in seen:
-            seen.add(w)
-            out.append(w)
-    return out
+    # Do not draw curve-obvious notes into the preview image.
+    return []
 
 
 def _render_with_pil(
@@ -444,7 +429,7 @@ def _build_summary(data: Dict[str, Any], data_2: Optional[Dict[str, Any]]) -> st
         "",
         f"- Source node: `{data.get('source_node', 'unknown')}`",
         f"- Source version: `{data.get('version', 'unknown')}`",
-        f"- Mode: `{data.get('envelope_mode')}` / `{data.get('ramp_mode')}` / q=`{float(data.get('ramp_q', 1.0)):.3g}`",
+        f"- Mode: `{data.get('envelope_mode')}` / `{data.get('ramp_mode')}` / q_in=`{float(data.get('q_in', data.get('ramp_q', 1.0))):.3g}` / q_out=`{float(data.get('q_out', data.get('ramp_q', data.get('q_in', 1.0)))):.3g}`",
         f"- Region: `{data.get('effect_region')}`",
         f"- Frames: `{data.get('total_frames')}` rendered / `{data.get('latent_frames')}` latent @ `{fps:.3g}` fps",
         f"- Y axis: local envelope strength, default 0..1; expands only for local values outside this range",
@@ -456,7 +441,7 @@ def _build_summary(data: Dict[str, Any], data_2: Optional[Dict[str, Any]]) -> st
             "",
             "## Overlay data_2",
             f"- Source version: `{data_2.get('version', 'unknown')}`",
-            f"- Mode: `{data_2.get('envelope_mode')}` / `{data_2.get('ramp_mode')}` / q=`{float(data_2.get('ramp_q', 1.0)):.3g}`",
+            f"- Mode: `{data_2.get('envelope_mode')}` / `{data_2.get('ramp_mode')}` / q_in=`{float(data_2.get('q_in', data_2.get('ramp_q', 1.0))):.3g}` / q_out=`{float(data_2.get('q_out', data_2.get('ramp_q', data_2.get('q_in', 1.0)))):.3g}`",
             f"- Region: `{data_2.get('effect_region')}`",
             f"- {_lora_strength_label(data_2)}",
         ])
@@ -487,7 +472,7 @@ class LTXVEnvelopeCurvePreview:
     RETURN_NAMES = ("curve_image", "report_md", "report_json")
     FUNCTION = "render"
     CATEGORY = "LTXV/Diagnostics"
-    DESCRIPTION = "v1.1: 1200x800 Curve Preview with larger typography; suppresses low-value flat-mode ramp_q warning; data/data_2 optional fallback retained."
+    DESCRIPTION = "v1.3.0: 1200x800 Curve Preview with larger typography; suppresses low-value flat-mode ramp_q warning; data/data_2 optional fallback retained."
 
     def render(self, data=None, data_2=None):
         data = _maybe_data_dict(data)

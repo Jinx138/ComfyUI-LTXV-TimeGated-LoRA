@@ -1,24 +1,20 @@
 # Python
-
-**pycache**/
+__pycache__/
 *.py[cod]
 *.pyo
 
 # ComfyUI generated/local folders
-
 output/
 input/
 temp/
 *.log
 
 # Local editor and operating system files
-
 .DS_Store
 .vscode/
 .idea/
 
 # Local working media not explicitly selected as repository examples
-
 *.png
 *.jpg
 *.jpeg

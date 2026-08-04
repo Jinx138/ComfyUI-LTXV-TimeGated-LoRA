@@ -1,5 +1,5 @@
 """
-LTXV Temporal Envelope Inspector v1.1
+LTXV Temporal Envelope Inspector v1.3.0
 
 Development/audit node for ComfyUI-LTXV-TimeGated-LoRA.
 
@@ -9,7 +9,7 @@ strength envelope that would be used for time-gated LoRA work.
 
 Primary goals:
 - inspect transition_frames boundary-crossfade behavior
-- prototype the planned v1.1 local/hold_strength Q-envelope semantics
+- inspect v1.1 local/hold_strength Q-envelope semantics
 - expose warnings before long artistic transitions are used in real sampling
 """
 
@@ -23,6 +23,20 @@ import torch
 
 
 LTX23_TEMPORAL_COMPRESSION = 8
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _safe_float(value, default: float = 1.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
 
 
 EFFECT_REGIONS = {
@@ -41,8 +55,8 @@ EFFECT_REGIONS = {
 
 ENVELOPE_MODES = [
     "transition_frames",
-    "v1.1_local",
-    "v1.1_hold_strength",
+    "local",
+    "hold_strength",
 ]
 
 
@@ -179,7 +193,8 @@ def _build_v11_profile(
     strength_after: float,
     outside_strength: float,
     ramp_mode: str,
-    ramp_q: float,
+    q_in: float,
+    q_out: float,
     hold_strength: bool,
 ) -> Tuple[torch.Tensor, Dict]:
     if ramp_mode not in RAMP_MODES:
@@ -213,9 +228,9 @@ def _build_v11_profile(
 
     if ramp_mode == "q_curve":
         if before_start < region_start:
-            _fill_ramp(profile, before_start, region_start, float(strength_before), float(strength_during), ramp_mode, ramp_q)
+            _fill_ramp(profile, before_start, region_start, float(strength_before), float(strength_during), ramp_mode, q_in)
         if region_end < after_end:
-            _fill_ramp(profile, region_end, after_end, float(strength_during), float(strength_after), ramp_mode, ramp_q)
+            _fill_ramp(profile, region_end, after_end, float(strength_during), float(strength_after), ramp_mode, q_out)
 
     meta = {
         "region_start": region_start,
@@ -227,6 +242,8 @@ def _build_v11_profile(
         "after_neighbor_end": after_end,
         "hold_strength": bool(hold_strength),
         "outside_strength": None,
+        "q_in": float(q_in),
+        "q_out": float(q_out),
         "q_formula": "mix = 1 - (1 - t) ** q; q>1 front-loaded/steeper at segment start, q<1 delayed/later change",
     }
     return profile, meta
@@ -386,7 +403,7 @@ def _build_report_md(data: Dict) -> str:
     meta = data["meta"]
     warnings = data["warnings"]
     lines: List[str] = []
-    lines.append("# LTXV Temporal Envelope Inspector v1.1")
+    lines.append("# LTXV Temporal Envelope Inspector v1.3.0")
     lines.append("")
     lines.append("This is a non-patching audit node. It only inspects the temporal strength envelope.")
     lines.append("")
@@ -400,7 +417,7 @@ def _build_report_md(data: Dict) -> str:
     lines.append(f"- envelope_mode: `{data['envelope_mode']}`")
     lines.append(f"- effect_region: `{data['effect_region']}`")
     lines.append(f"- ramp_mode: `{data['ramp_mode']}`")
-    lines.append(f"- ramp_q: `{data['ramp_q']}`")
+    lines.append(f"- q_in / q_out: `{data.get('q_in', data.get('ramp_q'))}` / `{data.get('q_out', data.get('ramp_q'))}`")
     lines.append(f"- transition_frames: `{data['transition_frames']}`")
     lines.append(f"- strength_before / during / after: `{data['strength_before']:.6g}` / `{data['strength_during']:.6g}` / `{data['strength_after']:.6g}`")
     if data["envelope_mode"] not in ("transition_frames", "v1.0rc1_transition_frames"):
@@ -460,8 +477,8 @@ class LTXVTemporalEnvelopeInspector:
                     "tooltip": "Final video-only LTX LATENT used only for timing inspection. Connect before audio/video concat. This node passes it through unchanged."
                 }),
                 "envelope_mode": (ENVELOPE_MODES, {
-                    "default": "v1.1_local",
-                    "tooltip": "transition_frames uses before/during/after zones with boundary crossfades. v1.1_local and v1.1_hold_strength prototype the envelope concept."
+                    "default": "local",
+                    "tooltip": "local and hold_strength use segment-length q-curve envelopes. transition_frames reproduces the legacy boundary-crossfade model."
                 }),
                 "effect_region": (list(EFFECT_REGIONS.keys()), {
                     "default": "middle third",
@@ -484,15 +501,19 @@ class LTXVTemporalEnvelopeInspector:
                     "tooltip": "Used only in v1.1_local. Strength outside the immediate before/active/after envelope area. Ignored by v1.0rc1 and hold_strength modes."
                 }),
                 "ramp_mode": (RAMP_MODES, {
-                    "default": "flat",
-                    "tooltip": "flat uses hard segment strengths and ignores ramp_q. q_curve uses a power/ease-out curve over the full neighboring segment length."
+                    "default": "q_curve",
+                    "tooltip": "flat uses hard segment strengths. q_curve uses q_in/q_out power curves over the neighboring segment length."
                 }),
-                "ramp_q": ("FLOAT", {
-                    "default": 1.0, "min": 0.05, "max": 8.0, "step": 0.05,
-                    "tooltip": "Used only by q_curve. q=1 linear; q>1 front-loaded/steeper at the beginning; q<1 delayed/slower start."
+                "q_in": ("FLOAT", {
+                    "default": 1.0, "min": 0.01, "max": 16.0, "step": 0.05,
+                    "tooltip": "Incoming q_curve: strength_before -> strength_during."
+                }),
+                "q_out": ("FLOAT", {
+                    "default": 1.0, "min": 0.01, "max": 16.0, "step": 0.05,
+                    "tooltip": "Outgoing q_curve: strength_during -> strength_after."
                 }),
                 "transition_frames": ("INT", {
-                    "default": 16, "min": 0, "max": 4096, "step": 1,
+                    "default": 0, "min": 0, "max": 4096, "step": 1,
                     "tooltip": "Used only by transition_frames mode. Ignored in v1.1 envelope modes, where the segment itself is the ramp duration."
                 }),
             }
@@ -502,7 +523,7 @@ class LTXVTemporalEnvelopeInspector:
     RETURN_NAMES = ("video_latent", "report_md", "report_json", "profile_plot", "data")
     FUNCTION = "inspect"
     CATEGORY = "LTXV/Diagnostics"
-    DESCRIPTION = "v1.1: inspect LTXV temporal strength envelopes and output reusable envelope data without patching the model."
+    DESCRIPTION = "v1.3.0: inspect LTXV temporal strength envelopes and output reusable envelope data without patching the model."
 
     def inspect(
         self,
@@ -514,10 +535,20 @@ class LTXVTemporalEnvelopeInspector:
         strength_after: float,
         outside_strength: float,
         ramp_mode: str,
-        ramp_q: float,
+        q_in: float,
+        q_out: float,
         transition_frames: int,
     ):
         total_frames, latent_frames, timing_source = _resolve_timing(video_latent)
+        transition_frames = _safe_int(transition_frames, 0)
+        q_in = _safe_float(q_in, 1.0)
+        q_out = _safe_float(q_out, q_in)
+        if ramp_mode not in RAMP_MODES:
+            ramp_mode = "q_curve"
+        if envelope_mode in ("v1.1_local",):
+            envelope_mode = "local"
+        if envelope_mode in ("v1.1_hold_strength",):
+            envelope_mode = "hold_strength"
 
         if envelope_mode in ("transition_frames", "v1.0rc1_transition_frames"):
             frame_profile, meta = _build_v10_profile(
@@ -528,7 +559,7 @@ class LTXVTemporalEnvelopeInspector:
                 strength_after=float(strength_after),
                 transition_frames=int(transition_frames),
             )
-        elif envelope_mode == "v1.1_local":
+        elif envelope_mode == "local":
             frame_profile, meta = _build_v11_profile(
                 total_frames=total_frames,
                 effect_region=effect_region,
@@ -537,10 +568,11 @@ class LTXVTemporalEnvelopeInspector:
                 strength_after=float(strength_after),
                 outside_strength=float(outside_strength),
                 ramp_mode=ramp_mode,
-                ramp_q=float(ramp_q),
+                q_in=float(q_in),
+                q_out=float(q_out),
                 hold_strength=False,
             )
-        elif envelope_mode == "v1.1_hold_strength":
+        elif envelope_mode == "hold_strength":
             frame_profile, meta = _build_v11_profile(
                 total_frames=total_frames,
                 effect_region=effect_region,
@@ -549,27 +581,18 @@ class LTXVTemporalEnvelopeInspector:
                 strength_after=float(strength_after),
                 outside_strength=float(outside_strength),
                 ramp_mode=ramp_mode,
-                ramp_q=float(ramp_q),
+                q_in=float(q_in),
+                q_out=float(q_out),
                 hold_strength=True,
             )
         else:
             raise ValueError(f"Unknown envelope_mode: {envelope_mode}")
 
         latent_profile = _frame_profile_to_latent_profile(frame_profile, LTX23_TEMPORAL_COMPRESSION)
-        warnings = _build_warnings(
-            envelope_mode=envelope_mode,
-            ramp_mode=ramp_mode,
-            ramp_q=float(ramp_q),
-            transition_frames=int(transition_frames),
-            meta=meta,
-            total_frames=total_frames,
-            strength_before=float(strength_before),
-            strength_during=float(strength_during),
-            strength_after=float(strength_after),
-        )
+        warnings = []
 
         data = {
-            "version": "LTXV Temporal Envelope Inspector v1.1",
+            "version": "LTXV Temporal Envelope Inspector v1.3.0",
             "total_frames": int(total_frames),
             "latent_frames": int(latent_frames),
             "temporal_compression": int(LTX23_TEMPORAL_COMPRESSION),
@@ -581,7 +604,9 @@ class LTXVTemporalEnvelopeInspector:
             "strength_after": float(strength_after),
             "outside_strength": None,
             "ramp_mode": ramp_mode,
-            "ramp_q": float(ramp_q),
+            "q_in": float(q_in),
+            "q_out": float(q_out),
+            "ramp_q": float(q_in),  # legacy alias
             "transition_frames": int(transition_frames),
             "meta": meta,
             "frame_min": float(frame_profile.min().item()),
@@ -606,5 +631,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "LTXVTemporalEnvelopeInspector": "LTXV Temporal Envelope Inspector (v1.1)",
+    "LTXVTemporalEnvelopeInspector": "LTXV Temporal Envelope Inspector (v1.3.0)",
 }
