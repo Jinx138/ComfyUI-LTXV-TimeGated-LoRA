@@ -170,6 +170,8 @@ git pull
 - An LTX 2.3 video workflow
 - Visual LTX 2.3 LoRA files
 
+**Companion node:** The Temporal Director's Scheduled Prompt Relay node requires an installed and enabled [ComfyUI-PromptRelay](https://github.com/kijai/ComfyUI-PromptRelay). The classic Time-Gated LoRA nodes and Sigma Tail / Trim can be used without it.
+
 No additional Python packages are required by this repository.
 
 ---
